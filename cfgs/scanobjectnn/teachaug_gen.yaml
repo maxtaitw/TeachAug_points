@@ -70,8 +70,8 @@ adaptpoint_params:
   b1: 0.5
   b2: 0.999
   hardratio_std: 2
-  hardratio_s: 2
-  hardratio: 4
+  hardratio_s: 3
+  hardratio: 3
 
 # teacher model
 student_criterion_args:
@@ -83,7 +83,9 @@ teacher_criterion_args:
   label_smoothing: 0.3
 
 loss_weight:
-  w_swd: 3
+  w_swd: 4
+  w_swd_s: 6
+  w_swd_e: 2
   w_tea: 1
 
 ema_rate: 0.995
@@ -104,3 +106,7 @@ datatransforms:
     scale: [0.9, 1.1]
     angle: [0.0, 1.0, 0.0]
     gravity_dim: 1
+
+# dataset:
+#   train:
+#     shuffle: False

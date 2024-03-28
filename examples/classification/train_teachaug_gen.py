@@ -411,7 +411,7 @@ def main(gpu, cfg, profile=False):
 
         # if (epoch+1) % 10 == 0:
         #     eval_corrupt_wrapper_scanobjectnnc(model, validate_scanobjectnnc, {'cfg': cfg}, cfg.run_dir, epoch)
-
+        # train_loader = fake_train_loader
 
 
         is_best = False
@@ -445,6 +445,8 @@ def main(gpu, cfg, profile=False):
                             additioanl_dict={'best_val': best_val},
                             is_best=is_best
                             )
+        
+
     # test the last epoch
     test_macc, test_oa, test_accs, test_cm = validate(model, test_loader, cfg)
     print_cls_results(test_oa, test_macc, test_accs, best_epoch, cfg)
@@ -465,6 +467,8 @@ def main(gpu, cfg, profile=False):
     last_ckpt_path = os.path.join(cfg.ckpt_dir, f'{cfg.run_name}_ckpt_latest.pth')
     # testscanobjectnnc(model=model, path=best_ckpt_path, cfg=cfg)
     # testscanobjectnnc(model=model, path=last_ckpt_path, cfg=cfg)
+
+    
 
     if writer is not None:
         writer.close()

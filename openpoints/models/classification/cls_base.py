@@ -25,13 +25,16 @@ class BaseCls(nn.Module):
             self.prediction = build_model_from_cfg(cls_args)
         else:
             self.prediction = nn.Identity()
-        print(criterion_args)
+        # print(criterion_args)
         self.criterion = build_criterion_from_cfg(criterion_args) if criterion_args is not None else None
 
-    def forward(self, data):
-        global_feat = self.encoder.forward_cls_feat(data)
-        return self.prediction(global_feat)
+    def get_feat(self, data):
+        return self.encoder.forward_cls_feat(data)
 
+    def forward(self, data):
+        global_feat = self.get_feat(data)
+        return self.prediction(global_feat)
+    
     def get_loss(self, pred, gt, inputs=None):
         return self.criterion(pred, gt.long())
 

@@ -1,0 +1,132 @@
+# FLOPs	GMACs	Params.(M)
+#  1.64	 0.81	 1.367
+# 2040.039810480711
+
+model:
+  NAME: BaseCls
+  encoder_args:
+    NAME: PointNet2Encoder
+    in_channels: 4
+    width: null
+    layers: 3
+    use_res: False
+    strides: [2, 4, 1]
+    mlps: [[[64, 64, 128]],  # stage 1: 96
+          [[128, 128, 256]],
+          [[256, 512, 1024]]
+          ] # stage 4: 1024
+    radius: [0.2, 0.4, null]
+    num_samples: [32, 64, null]
+    sampler: fps
+    aggr_args:
+      NAME: 'convpool'
+      feature_type: 'dp_fj'
+      anisotropic: False
+      reduction: 'max'
+    group_args:
+      NAME: 'ballquery'
+      use_xyz: True
+      normalize_dp: False
+    conv_args: 
+      order: conv-norm-act
+    act_args:
+      act: 'relu'
+    norm_args:
+      norm: 'bn'
+  cls_args: 
+    NAME: ClsHead
+    num_classes: 15
+    mlps: [512, 256]
+    norm_args: 
+      norm: 'bn1d'
+
+# pointwolf:
+#   w_num_anchor: 4
+#   w_sigma: 0.5
+#   w_R_range: 10
+#   w_S_range: 3
+#   w_T_range: 0.25
+
+epochs: 300
+
+mode: teachaugpoint_weight
+
+# datatransforms_scanobjectnn_c:
+#   val: [PointsToTensor, PointCloudCenterAndNormalize]
+#   kwargs:
+#     gravity_dim: 1
+
+adaptmodel_gan:
+  NAME: Teachaug_Augmentor
+  w_num_anchor: 4
+  w_sigma: 0.5
+  w_R_range: 10
+  w_S_range: 3
+  w_T_range: 0.5
+
+adaptmodel_dis:
+  NAME: PointDiscriminator1
+  num_classes: 15
+  normal_channel: False
+
+adaptpoint_params:
+  lr_generator: 0.0001
+  lr_discriminator: 0.0004
+  b1: 0.5
+  b2: 0.999
+  hardratio_std: 2
+  hardratio_s: 3
+  hardratio: 3
+
+# teacher model
+student_criterion_args:
+  NAME: SmoothCrossEntropy
+  label_smoothing: 0.3
+
+teacher_criterion_args:
+  NAME: SmoothCrossEntropy
+  label_smoothing: 0.3
+
+weighted_criterion_args:
+  NAME: WeightedSmoothCrossEntropy
+  label_smoothing: 0.3
+
+use_sample_weight: True  
+
+criterion_args:
+  NAME: WeightedSmoothCrossEntropy
+  label_smoothing: 0.3
+
+loss_weight:
+  w_swd: 4
+  w_swd_s: 8
+  w_swd_e: 4
+  w_tea: 1
+
+ema_rate: 0.995
+
+datatransforms:
+  train: [PointsToTensor, PointCloudCenterAndNormalize]
+  vote: [PointCloudRotation]
+  val: [PointsToTensor, PointCloudCenterAndNormalize]
+  kwargs:
+    scale: [1, 1]
+    angle: [0.0, 0.0, 0.0]
+    gravity_dim: 1
+# datatransforms:
+#   train: [PointsToTensor, PointCloudScaling, PointCloudCenterAndNormalize, PointCloudRotation]
+#   vote: [PointCloudRotation]
+#   val: [PointsToTensor, PointCloudCenterAndNormalize]
+#   kwargs:
+#     scale: [0.9, 1.1]
+#     angle: [0.0, 1.0, 0.0]
+#     gravity_dim: 1
+
+pretrained_teacher:
+  use_pretrained: True
+  pretrained_teacher_path: /mnt/HDD8/max/TeachAugment_point/pretrained_model/scanobjectnn-train-pointnext-s-ngpus1-seed8548-20231015-224407-SaFSoNNkA3BsxBMAmRhNTt_ckpt_best.pth
+
+continued_start_epoch: 1
+continued_cycle: 5
+# wandb:
+#   use_wandb: False

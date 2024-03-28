@@ -8,9 +8,10 @@ from tqdm import tqdm
 import torch, torch.nn as nn
 from torch import distributed as dist
 from torch.utils.tensorboard import SummaryWriter
+# from torch.optim.swa_utils import get_ema_multi_avg_fn
 from openpoints.utils import set_random_seed, save_checkpoint, load_checkpoint, resume_checkpoint, setup_logger_dist, \
     cal_model_parm_nums, Wandb
-from openpoints.utils import AverageMeter, ConfusionMatrix, get_mious
+from openpoints.utils import AverageMeter, ConfusionMatrix, get_mious, PCA
 from openpoints.dataset import build_dataloader_from_cfg
 from openpoints.transforms import build_transforms_from_cfg
 from openpoints.optim import build_optimizer_from_cfg
@@ -27,6 +28,9 @@ from openpoints.utils import Summary
 from openpoints.dataset.scanobjectnn_c.scanobjectnn_c import ScanObjectNNC, eval_corrupt_wrapper_scanobjectnnc
 from openpoints.loss import build_criterion_from_cfg
 
+import matplotlib.pyplot as plt
+from tsnecuda import TSNE
+
 def copyfiles(cfg):
     import shutil
     #   copy pointcloud model
@@ -36,16 +40,6 @@ def copyfiles(cfg):
     shutil.copy(f'{os.path.realpath(__file__)}', path_copy)
     shutil.copytree('openpoints', f'{path_copy}/openpoints')
     pass
-
-def get_features_by_keys(input_features_dim, data):
-    if input_features_dim == 3:
-        features = data['pos']
-    elif input_features_dim == 4:
-        features = torch.cat(
-            (data['pos'], data['heights']), dim=-1)
-        raise NotImplementedError("error")
-    return features.transpose(1, 2).contiguous()
-
 
 def write_to_csv(oa, macc, accs, best_epoch, cfg, write_header=True):
     accs_table = [f'{item:.2f}' for item in accs]
@@ -60,7 +54,6 @@ def write_to_csv(oa, macc, accs, best_epoch, cfg, write_header=True):
         writer.writerow(data)
         f.close()
 
-
 def print_cls_results(oa, macc, accs, epoch, cfg):
     s = f'\nClasses\tAcc\n'
     for name, acc_tmp in zip(cfg.classes, accs):
@@ -68,13 +61,14 @@ def print_cls_results(oa, macc, accs, epoch, cfg):
     s += f'E@{epoch}\tOA: {oa:3.2f}\tmAcc: {macc:3.2f}\n'
     logging.info(s)
 
-def save_ganmodel(generator, path):
+def save_augmenter(generator, path, epoch):
     state = {
         'generator': generator.state_dict(),
-        # 'discriminator': discriminator.state_dict(),
     }
-    filepath = os.path.join(path, f"model_gan.pth")
-    # filepath = os.path.join(path, f"gan_last_checkpoint.pth")
+    path = path + '/augmenter'
+    if not os.path.isdir(path):
+        os.makedirs(path)
+    filepath = os.path.join(path, f"augmenter_{epoch}.pth")
     torch.save(state, filepath)
 
 def get_gan_model(cfg):
@@ -90,11 +84,6 @@ def get_gan_model(cfg):
     print("==> Total parameters of Generator: {:.2f}M"\
           .format(sum(p.numel() for p in generator.parameters()) / 1000000.0))
 
-    # discriminator
-    # discriminator = build_adaptpointmodels_from_cfg(cfg.adaptmodel_dis).cuda()
-    # print("==> Total parameters of Discriminater: {:.2f}M"\
-    #       .format(sum(p.numel() for p in discriminator.parameters()) / 1000000.0))
-
     if cfg.distributed:
         generator = nn.parallel.DistributedDataParallel(
             generator.cuda(), device_ids=[cfg.rank], output_device=cfg.rank)
@@ -104,49 +93,49 @@ def get_gan_model(cfg):
 
     # Optimizers
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=cfg.adaptpoint_params.lr_generator, betas=(cfg.adaptpoint_params.b1, cfg.adaptpoint_params.b2))
-    # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.adaptpoint_params.lr_discriminator, betas=(cfg.adaptpoint_params.b1, cfg.adaptpoint_params.b2))
 
     criterion_gan = torch.nn.BCELoss()
     dict = {
         'model_G': generator,
-        # 'model_D': discriminator,
         'optimizer_G': optimizer_G,
-        # 'optimizer_D': optimizer_D,
         'criterion_gan': criterion_gan
     }
     return dict
 
-def train_gan(cfg, gan_dict, train_loader, summary, writer, epoch, model_pointcloud, model_teacher):
+def train_gan(cfg, gan_dict, train_loader, summary, writer, epoch, model_student, model_teacher, loss_init=None):
     generator = gan_dict['model_G']
-    # discriminator = gan_dict['model_D']
     optimizer_G = gan_dict['optimizer_G']
-    # optimizer_D = gan_dict['optimizer_D']
     criterion_gan = gan_dict['criterion_gan']
     generator.train()
-    # discriminator.train()
-    model_pointcloud.eval()
-    model_teacher.eval()
+    model_student.eval()
+    # model_teacher.eval()
     # prepare buffer list for update
     tmp_out_buffer_list = []
     tmp_points_buffer_list = []
     tmp_label_buffer_list = []
-    pointwolf = PointWOLF_classversion(**cfg.pointwolf)
+    tmp_idx_buffer_list = []
+    tmp_unmasked_buffer_list = []
+    tmp_originx_buffer_list = []
+    aug_count = 0
+    # pointwolf = PointWOLF_classversion(**cfg.pointwolf)
     for i, data in tqdm(enumerate(train_loader), total=train_loader.__len__()):
         for key in data.keys():
             data[key] = data[key].cuda(non_blocking=True)
+        if 'origin_x' in data and data['origin_x'] is not None:
+            origin_x = data['origin_x']
+        else:
+            origin_x = data['x'].clone()
         points = data['x']
         label = data['y']
+        idx = data['idx']
+        if 'unmasked_pos' in data and data['unmasked_pos'] is not None:
+            points[:, :, :3] = data['unmasked_pos']
         points_clone = points.clone()
+        # points_unmasked = points.clone()
         input_pointcloud = points[:, :, :3].contiguous()
 
-
-        # pointwolf_WOpara = PointWOLF_classversion().to(device)
-        _, pointcloud_pointwolf = pointwolf(input_pointcloud)
-        real_label = torch.full((input_pointcloud.size(0), 1), 0.9, requires_grad=True).cuda()
-        fake_label = torch.full((input_pointcloud.size(0), 1), 0.1, requires_grad=True).cuda()
-
         #  Train Generator
-        _, gen_imgs, sample_weight = generator(input_pointcloud)
+        _, unmasked_pos, gen_imgs, sample_weight = generator(input_pointcloud)
         # g_loss_raw = criterion_gan(discriminator(gen_imgs), real_label)
 
         points[:, :, :3] = gen_imgs
@@ -157,88 +146,116 @@ def train_gan(cfg, gan_dict, train_loader, summary, writer, epoch, model_pointcl
             'x': points[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous(),
         }
         data_real = {
-            'pos': points_clone[:, :, :3].contiguous(),
+            'pos': origin_x[:, :, :3].contiguous(),
             'y': label,
-            'x': points_clone[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous(),
+            'x': origin_x[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous(),
         }
+        # data_prev = {
+        #     'pos': points_clone[:, :, :3].contiguous(),
+        #     'y': label,
+        #     'x': points_clone[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous(),
+        # }
 
-        feedback_loss_ratio = cfg.get('feedbackloss_ratio', 1)
-        if feedback_loss_ratio > 0:
-            feedback_loss = get_feedback_loss_teacher_v2(cfg=cfg, model_pointcloud=model_pointcloud, model_teacher=model_teacher, \
-                                              data_real=data_real, data_fake=data_fake, \
-                                              epoch=epoch, summary=summary, writer=writer)
-            g_loss = feedback_loss * feedback_loss_ratio
-        else:
-            g_loss = feedback_loss
+        # feedback_loss_ratio = cfg.get('feedbackloss_ratio', 1)
 
-        # g_loss = g_loss_raw + feedback_loss * feedback_loss_ratio
-        # g_loss = g_loss_raw
+        feedback_loss, pred_fake_stu, pred_fake_tea = get_feedback_loss_teacher_weight(cfg=cfg, model_student=model_student, model_teacher=model_teacher, \
+                                            data_real=data_real, data_fake=data_fake, sample_weight=sample_weight, \
+                                            epoch=epoch, summary=summary, writer=writer)
+            
 
         # print(f"gard before backward: {generator.predict_prob_layer.embedding.net[0].weight.grad}")
         optimizer_G.zero_grad()
-        g_loss.backward(torch.ones_like(g_loss))
-        # print(f"gard after backward: {generator.predict_prob_layer.extract_local_feat_masking[0].weight.grad[0][0][0]}")
-        # print(f"weight: {generator.predict_prob_layer.extract_local_feat_masking[0].weight[0][0][0]}")
-        # print(f"gard after backward: {generator.predict_prob_layer.extract_local_feat_masking.net[0].weight.grad[0][0][0]}")
-        # print(f"weight: {generator.predict_prob_layer.extract_local_feat_masking.net[0].weight[0][0][0]}")
+        feedback_loss.backward(torch.ones_like(feedback_loss))
+
         optimizer_G.step()
-        # writer.add_scalar('train_G_iter/gen_loss_raw', g_loss_raw.item(), summary.train_iter_num)
-        # writer.add_scalar('train_G_iter/gen_loss_feedback', feedback_loss.item(), summary.train_iter_num)
-
-
-        # ---------------------
-        #  Train Discriminator
-        # ---------------------
-        # if i % 1 == 0:
-        #     """
-        #     判别器损失函数：一方面让真实图片通过判别器与valid越接近，
-        #     另一方面让生成的图片通过判别器与fake越接近(正好与生成器相矛盾，这样才能提高判别能力)
-        #     """
-        #     # real_loss = criterion_gan(discriminator(pointcloud_pointwolf), real_label)
-        #     real_loss = criterion_gan(discriminator(input_pointcloud), real_label)
-        #     # fake_loss = criterion_gan(discriminator(gen_imgs), fake_label)
-        #     fake_loss = criterion_gan(discriminator(gen_imgs.detach()), fake_label)
-        #     d_loss = (real_loss + fake_loss) / 2
-
-        #     optimizer_D.zero_grad()
-        #     d_loss.backward()
-        #     optimizer_D.step()
-
-        # writer.add_scalar('train_G_iter/gen_loss', g_loss.item(), summary.train_iter_num)
-        # writer.add_scalar('train_G_iter/dis_loss', d_loss.item(), summary.train_iter_num)
         summary.summary_train_iter_num_update()
 
+        if epoch > 0:
+            pred_fake_tea = torch.nn.functional.softmax(pred_fake_tea, dim=1)
+            max_scores_tea, max_idx_tea = torch.max(pred_fake_tea, dim=1)
+            pred_fake_stu = torch.nn.functional.softmax(pred_fake_stu, dim=1)
+            max_scores_stu, max_idx_stu = torch.max(pred_fake_stu, dim=1)
+            print('label', label)
+            print('teacher', max_idx_tea)
+            print('student', max_idx_stu)
+            # print(pred_fake_tea)
+            # max_mean = torch.mean(max_scores_tea)
 
+            # threshold = get_threshold(cfg, epoch, loss_init_s=loss_init_s)
+            # threshold = loss_init_s*0.5
+            # writer.add_scalar('train_G_iter/max_mean', max_mean, summary.train_iter_num)
+            # print(loss_init_s, threshold)
+            out_points, unmasked_pos, count = mask_data(pred_fake_stu, max_scores_tea, max_idx_tea, points, unmasked_pos, origin_x, label, epoch)
+            aug_count += count
+        else:
+            out_points = points
 
-        #   save fake_data each N mini-batch
-        if (i) % 10 == 0 and i < 110:
-            path = f'{cfg.run_dir}/fakedata/epoch{epoch}'
-            if not os.path.isdir(path):
-                os.makedirs(path)
-            f = h5py.File(f'{path}/minibatch{i}.h5', 'w')  # 创建一个h5文件，文件指针是f
-            f['pointcloud'] = gen_imgs.detach().cpu().numpy()  # 将数据写入文件的主键data下面
-            f['raw'] = input_pointcloud.detach().cpu().numpy()
-            f['raw_pointwolf'] = pointcloud_pointwolf.detach().cpu().numpy()
-            f['label'] = label.detach().cpu().numpy()
-            f.close()
-
-        tmp_out_buffer_list.append(gen_imgs.detach().cpu().numpy())
+        tmp_out_buffer_list.append(out_points[:, :, :3].detach().cpu().numpy())
         tmp_label_buffer_list.append(label.detach().cpu().numpy())
-        tmp_points_buffer_list.append(points.detach().cpu().numpy())
+        tmp_idx_buffer_list.append(idx.detach().cpu().numpy())
+        tmp_points_buffer_list.append(out_points.detach().cpu().numpy())
+        tmp_unmasked_buffer_list.append(unmasked_pos.detach().cpu().numpy())
+        tmp_originx_buffer_list.append(origin_x.detach().cpu().numpy())
 
         # print(f'{i}-th, g_loss:{g_loss}, d_loss:{d_loss}')
-
-    # save_ganmodel(generator=generator, discriminator=discriminator, path=args.checkpoint)
     # buffer loader will be used to save fake pose pair
     print('\nprepare buffer loader for train on fake pose')
-    model_pointcloud.zero_grad()
-    model_teacher.zero_grad()
-    save_ganmodel(generator=generator, path=cfg.run_dir)
-    fake_dataset = Form_dataset_cls(tmp_out_buffer_list, tmp_label_buffer_list, tmp_points_buffer_list)
+    # print(aug_count)
+    writer.add_scalar('train_G_iter/aug_count', aug_count, summary.train_iter_num)
+    model_student.zero_grad()
+    # model_teacher.zero_grad()
+    # if ((epoch%25)<5):
+    #     save_augmenter(generator=generator, path=cfg.run_dir, epoch=epoch)
+    fake_dataset = Form_dataset_cls(tmp_out_buffer_list, tmp_label_buffer_list, tmp_idx_buffer_list, tmp_points_buffer_list, tmp_unmasked_buffer_list, tmp_originx_buffer_list)
     weight = sample_weight.detach().cpu().numpy()
     return fake_dataset, weight
 
+def mask_data(pred_fake_stu, max_scores_tea, max_idx_tea, points, unmasked_pos, origin_x, label, epoch):
+    # Find the maximum prediction score along the class dimension
+    pred_fake_stu = torch.nn.functional.softmax(pred_fake_stu, dim=1)
+    # max_score_stu, max_idx_stu = torch.max(pred_fake_stu, dim=1)
+    
+    score_stu = torch.gather(pred_fake_stu, 1, max_idx_tea.unsqueeze(1))
+    score_stu = torch.flatten(score_stu)
+    # max_scores, _ = torch.max(pred_fake_stu, dim=-1)
+    # print(label)
+    # print(score_stu)
+    th = get_threshold(epoch, max_scores_tea)
 
+    # mask_idx = max_idx_stu == max_idx_tea
+    # print(mask_idx.sum())
+    
+    # Create a mask based on whether the maximum score is smaller than the threshold
+    # mask = score_stu > (max_scores_tea*0.5)
+    mask = score_stu > th
+    
+    # Expand the mask dimensions to match the size of data
+    mask = mask.unsqueeze(-1).unsqueeze(-1)
+    count = mask.sum()
+    print(count)
+    
+    # Mask out the data A using the mask and replace it with data B
+    points = torch.where(mask, points, origin_x)
+    unmasked_pos = torch.where(mask, unmasked_pos, origin_x[:, :, :3])
+    
+    return points, unmasked_pos, count
+
+def get_threshold(epoch, max_scores_tea=1):
+    # ------------------------------------DASH------------------------------------
+    # Selection Stage: 
+    # if epoch > cfg.num_warmup_epoch:#+1000:
+    #     t = epoch - cfg.num_warmup_epoch + 1
+    if epoch > 0:
+        t = epoch + 1
+
+        C = 1.0001
+        gama = 1.005
+        mu = t - 1
+        threshold_s = C * pow(gama, -mu) * max_scores_tea
+        threshold_s = torch.clamp(threshold_s, 0.5)
+    else:
+        threshold_s = 500.0
+    return threshold_s
 
 
 def main(gpu, cfg, profile=False):
@@ -284,12 +301,20 @@ def main(gpu, cfg, profile=False):
         logging.info('Using Distributed Data parallel ...')
 
     ######################################################
+    # pretrained teacher
+    if cfg.pretrained_teacher.use_pretrained == True:
+        teacher_model = build_model_from_cfg(cfg.teacher_model).cuda()
+        logging.info('loading pretrained teacher model ...')
+        teacher_state_dict = torch.load(cfg.pretrained_teacher.pretrained_teacher_path, map_location='cpu')
+        teacher_model.load_state_dict(teacher_state_dict['model'])
     # EMA Teacher
-    avg_fn = lambda averaged_model_parameter, model_parameter, num_averaged: \
-                cfg.ema_rate * averaged_model_parameter + (1 - cfg.ema_rate) * model_parameter
-    teacher_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=avg_fn)
-    for ema_p in teacher_model.parameters():
-        ema_p.requires_grad_(False)
+    else:
+        avg_fn = lambda averaged_model_parameter, model_parameter, num_averaged: \
+                    cfg.ema_rate * averaged_model_parameter + (1 - cfg.ema_rate) * model_parameter
+        teacher_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=avg_fn)
+        teacher_model.train()
+        for ema_p in teacher_model.parameters():
+            ema_p.requires_grad_(False)
 
 
     # optimizer & scheduler
@@ -363,20 +388,32 @@ def main(gpu, cfg, profile=False):
                                              split='train',
                                              distributed=cfg.distributed,
                                              )
+    origin_train_loader = build_dataloader_from_cfg(cfg.batch_size,
+                                             cfg.dataset,
+                                             cfg.dataloader,
+                                             datatransforms_cfg=cfg.datatransforms,
+                                             split='train',
+                                             distributed=cfg.distributed,
+                                             )
     logging.info(f"length of training dataset: {len(train_loader.dataset)}")
 
+    
+    path_PCA = f'{cfg.run_dir}/PCA'
+    if not os.path.isdir(path_PCA):
+        os.makedirs(path_PCA)
     # ===> start training
     val_macc, val_oa, val_accs, best_val, macc_when_best, best_epoch = 0., 0., [], 0., 0., 0
     model.zero_grad()
     gan_model_dict = get_gan_model(cfg)
+    
     for epoch in range(cfg.start_epoch, cfg.epochs + 1):
         if cfg.distributed:
             train_loader.sampler.set_epoch(epoch)
         if hasattr(train_loader.dataset, 'epoch'):
             train_loader.dataset.epoch = epoch - 1
 
-        if epoch > cfg.get('adaptpoint_adjustepoch', 0):
-            fake_dataset, sample_weight = train_gan(cfg, gan_model_dict, train_loader, summary, writer, epoch, model, teacher_model)
+        if epoch > cfg.get('num_warmup_epoch', 0):
+            fake_dataset, sample_weight = train_gan(cfg, gan_model_dict, train_loader, summary, writer, epoch, model, teacher_model, loss_init=None)
             fake_train_loader = build_dataloader_from_cfg(cfg.batch_size,
                                                      cfg.dataset,
                                                      cfg.dataloader,
@@ -385,47 +422,37 @@ def main(gpu, cfg, profile=False):
                                                      distributed=cfg.distributed,
                                                      dataset=fake_dataset,
                                                      )
-            # sample_weight_copoy = sample_weight.clone()
-
-            # if cfg.pointwolf is not None:
-            #     train_loss, train_macc, train_oa, _, _ = \
-            #         train_one_epoch_pointwolf(model, train_loader,
-            #                         optimizer, scheduler, epoch, cfg)
-            # else:
-                # train_loss, train_macc, train_oa, _, _ = \
-                #     train_one_epoch(model, train_loader,
-                #                     optimizer, scheduler, epoch, cfg)
-            if cfg.get('rsmix_params', None) is not None:
-                train_loss, train_macc, train_oa, _, _ = \
-                    train_one_epoch_rsmix(model, train_loader,
-                                    optimizer, scheduler, epoch, cfg)
-            else:
-                print('train fake')
-                train_loss, train_macc, train_oa, _, _ = \
-                    train_one_epoch(model, teacher_model, fake_train_loader, sample_weight,
-                                optimizer, scheduler, epoch, cfg)
+            print('train fake')
+            train_loss, train_macc, train_oa, _, _ = \
+                train_one_epoch(model, teacher_model, fake_train_loader, sample_weight,
+                            optimizer, scheduler, epoch, cfg)
+            
         else:
+            sample_weight = None
             train_loss, train_macc, train_oa, _, _ = \
                 train_one_epoch(model, teacher_model, train_loader, sample_weight,
                                 optimizer, scheduler, epoch, cfg)
 
-
-        # if (epoch+1) % 10 == 0:
-        #     eval_corrupt_wrapper_scanobjectnnc(model, validate_scanobjectnnc, {'cfg': cfg}, cfg.run_dir, epoch)
-
-
+        # reset train loader
+        # if (epoch+1) > int(cfg.continued_start_epoch):
+        #     train_loader = fake_train_loader
+        #     if (epoch+1) % int(cfg.continued_cycle) == 0 or (epoch+1)<50:
+        #         train_loader = origin_train_loader
 
         is_best = False
         if epoch % cfg.val_freq == 0:
             val_macc, val_oa, val_accs, val_cm = validate_fn(
                 model, val_loader, cfg)
+            tea_val_macc, tea_val_oa, tea_val_accs, _ = validate_fn(
+                teacher_model, val_loader, cfg)
             is_best = val_oa > best_val
             if is_best:
                 best_val = val_oa
                 macc_when_best = val_macc
                 best_epoch = epoch
                 logging.info(f'Find a better ckpt @E{epoch}')
-                print_cls_results(val_oa, val_macc, val_accs, epoch, cfg)
+            print_cls_results(val_oa, val_macc, val_accs, epoch, cfg)
+            print_cls_results(tea_val_oa, tea_val_macc, tea_val_accs, epoch, cfg)
 
         lr = optimizer.param_groups[0]['lr']
         logging.info(f'Epoch {epoch} LR {lr:.6f} '
@@ -446,6 +473,8 @@ def main(gpu, cfg, profile=False):
                             additioanl_dict={'best_val': best_val},
                             is_best=is_best
                             )
+        
+        
     # test the last epoch
     test_macc, test_oa, test_accs, test_cm = validate(model, test_loader, cfg)
     print_cls_results(test_oa, test_macc, test_accs, best_epoch, cfg)
@@ -467,10 +496,77 @@ def main(gpu, cfg, profile=False):
     # testscanobjectnnc(model=model, path=best_ckpt_path, cfg=cfg)
     # testscanobjectnnc(model=model, path=last_ckpt_path, cfg=cfg)
 
+    
+
     if writer is not None:
         writer.close()
     if cfg.distributed:
         dist.destroy_process_group()
+
+def get_analyze_data(model, train_loader, epoch, cfg):
+    model.eval()
+    # feature PCA
+    pbar = tqdm(enumerate(train_loader), total=train_loader.__len__())
+    num_iter = 0
+    features = None
+    targets = None
+    indices = None
+    for idx, data in pbar:
+        for key in data.keys():
+            data[key] = data[key].cuda(non_blocking=True)
+        points = data['x']
+        target = data['y']
+        index = data['idx']
+
+        data['pos'] = points[:, :, :3].contiguous()
+        data['x'] = points[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous()
+        feat = model.get_feat(data)
+        
+        filter = torch.where((target == 2) | (target == 5) | (target == 8))
+        filtered_feat = feat[filter]
+        filtered_target = target[filter]
+        filtered_index = index[filter]
+
+        current_feature = filtered_feat.detach().cpu().numpy()
+        current_target = filtered_target.detach().cpu().numpy()
+        current_index = filtered_index.detach().cpu().numpy()
+        if features is not None:
+            features = np.concatenate((features, current_feature))
+            targets = np.concatenate((targets, current_target))
+            indices = np.concatenate((indices, current_index))
+        else:
+            features = current_feature
+            targets = current_target
+            indices = current_index
+        
+        analyze_data = [features, targets, indices]
+    
+    return analyze_data
+
+def tsne_viz(analyze_data, prev_analyze_data, epoch, cfg):
+    # Feature analyze
+    features, targets, indices = analyze_data
+    # sorted_indices = np.argsort(indices)
+    # sorted_features = features[sorted_indices]
+    # sorted_targets = targets[sorted_indices]
+
+    if prev_analyze_data is not None and (epoch%5 != 0):
+        prev_features, prev_targets, prev_indices = prev_analyze_data
+        concatenated_features = np.concatenate((prev_features, features), axis=0)
+        tsne = TSNE(n_components=2, perplexity=50).fit_transform(concatenated_features)
+        prev_tsne = tsne[0:len(prev_features), ]
+        current_tsne = tsne[len(prev_features):, ]
+        plt.scatter(prev_tsne[:, 0], prev_tsne[:, 1], s=3, c=prev_targets, alpha=0.5, cmap='viridis', marker='^')
+        plt.scatter(current_tsne[:, 0], current_tsne[:, 1], s=5, c=targets, cmap='plasma')
+
+    else: 
+        current_tsne = TSNE(n_components=2, perplexity=50).fit_transform(features)
+        # print('tsne', tsne.shape)
+        plt.scatter(current_tsne[:, 0], current_tsne[:, 1], s=5, c=targets)
+    
+    plt.savefig(f'{cfg.run_dir}/PCA/{int(epoch)}.png')
+    plt.clf()
+ 
 
 def train_one_epoch(model, teacher_model, train_loader, sample_weight, optimizer, scheduler, epoch, cfg):
     loss_meter = AverageMeter()
@@ -483,12 +579,13 @@ def train_one_epoch(model, teacher_model, train_loader, sample_weight, optimizer
     pbar = tqdm(enumerate(train_loader), total=train_loader.__len__())
     num_iter = 0
     for idx, data in pbar:
+        # print(data.keys())
         for key in data.keys():
             data[key] = data[key].cuda(non_blocking=True)
         num_iter += 1
         points = data['x']
         target = data['y']
-        teacher_model.update_parameters(model)
+        index = data['idx']
         """ bebug
         from openpoints.dataset import vis_points
         vis_points(data['pos'].cpu().numpy()[0])
@@ -514,16 +611,13 @@ def train_one_epoch(model, teacher_model, train_loader, sample_weight, optimizer
 
         data['pos'] = points[:, :, :3].contiguous()
         data['x'] = points[:, :, :cfg.model.in_channels].transpose(1, 2).contiguous()
-        # logits, loss_batch = model.get_logits_loss(data, target) if not hasattr(model, 'module') else model.module.get_logits_loss(data, target) 
-        logits, loss = model.get_logits_weighted_loss(data, target, sample_weight) if not hasattr(model, 'module') else model.module.get_logits_weighted_loss(data, target, sample_weight)
-        #   loss_batch [B, 1]
-        #   weighted loss
-        # sample_weight_copy = sample_weight.clone()
-        # norm_sample_weight = torch.div(sample_weight_copy.squeeze(), sample_weight_copy.sum())
-        # # # print(norm_sample_weight.shape)
-        # loss = (loss_batch * norm_sample_weight).sum().unsqueeze(0)
-        # print(loss.shape)
+        if cfg.use_sample_weight == True:
+            logits, loss = model.get_logits_weighted_loss(data, target, sample_weight) if not hasattr(model, 'module') else model.module.get_logits_weighted_loss(data, target, sample_weight)
+        else:
+            logits, loss = model.get_logits_loss(data, target) if not hasattr(model, 'module') else model.module.get_logits_loss(data, target) 
+
         loss.backward()
+
 
         # optimize
         if num_iter == cfg.step_per_update:
@@ -536,12 +630,18 @@ def train_one_epoch(model, teacher_model, train_loader, sample_weight, optimizer
             if not cfg.sched_on_epoch:
                 scheduler.step(epoch)
 
+        if cfg.pretrained_teacher.use_pretrained is False:
+            # print('update')
+            teacher_model.update_parameters(model)
+            # print(list(teacher_model.parameters()))
+            
         # update confusion matrix
         cm.update(logits.argmax(dim=1), target)
         loss_meter.update(loss.item())
         if idx % cfg.print_freq == 0:
             pbar.set_description(f"Train Epoch [{epoch}/{cfg.epochs}] "
                                  f"Loss {loss_meter.val:.3f} Acc {cm.overall_accuray:.2f}")
+
     macc, overallacc, accs = cm.all_acc()
     return loss_meter.avg, macc, overallacc, accs, cm
 

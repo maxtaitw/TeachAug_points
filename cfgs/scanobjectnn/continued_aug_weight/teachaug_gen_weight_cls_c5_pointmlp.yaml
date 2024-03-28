@@ -5,29 +5,20 @@
 model:
   NAME: BaseCls
   encoder_args:
-    NAME: PointNextEncoder
-    blocks: [1, 1, 1, 1, 1, 1]
-    strides: [1, 2, 2, 2, 2, 1]
-    width: 32
+    NAME: PointMLPEncoder
     in_channels: 4
-    sa_layers: 2
-    sa_use_res: True
-    radius: 0.15
-    radius_scaling: 1.5
-    nsample: 32
-    expansion: 4
-    aggr_args:
-      feature_type: 'dp_fj'
-      reduction: 'max'
-    group_args:
-      NAME: 'ballquery'
-      normalize_dp: True
-    conv_args:
-      order: conv-norm-act
-    act_args:
-      act: 'relu'
-    norm_args:
-      norm: 'bn'
+    embed_dim: 64
+    groups: 1
+    res_expansion: 1.0
+    activation: "relu"
+    bias: False
+    use_xyz: False
+    normalize: "anchor"
+    dim_expansion: [ 2, 2, 2, 2 ]
+    pre_blocks: [ 2, 2, 2, 2 ]
+    pos_blocks: [ 2, 2, 2, 2 ]
+    k_neighbors: [ 24, 24, 24, 24 ]
+    reducers: [ 2, 2, 2, 2 ]
   cls_args:
     NAME: ClsHead
     num_classes: 15
@@ -35,21 +26,21 @@ model:
     norm_args:
       norm: 'bn1d'
 
-pointwolf:
-  w_num_anchor: 4
-  w_sigma: 0.5
-  w_R_range: 10
-  w_S_range: 3
-  w_T_range: 0.25
+# pointwolf:
+#   w_num_anchor: 4
+#   w_sigma: 0.5
+#   w_R_range: 10
+#   w_S_range: 3
+#   w_T_range: 0.25
 
 epochs: 300
 
 mode: teachaugpoint_weight
 
-datatransforms_scanobjectnn_c:
-  val: [PointsToTensor, PointCloudCenterAndNormalize]
-  kwargs:
-    gravity_dim: 1
+# datatransforms_scanobjectnn_c:
+#   val: [PointsToTensor, PointCloudCenterAndNormalize]
+#   kwargs:
+#     gravity_dim: 1
 
 adaptmodel_gan:
   NAME: Teachaug_Augmentor
@@ -75,19 +66,27 @@ adaptpoint_params:
 
 # teacher model
 student_criterion_args:
-  NAME: NonSaturatingLoss
+  NAME: SmoothCrossEntropy
   label_smoothing: 0.3
 
 teacher_criterion_args:
   NAME: SmoothCrossEntropy
   label_smoothing: 0.3
 
-weight_teacher_criterion_args:
-  NAME: SmoothCrossEntropy_batch
+weighted_criterion_args:
+  NAME: WeightedSmoothCrossEntropy
+  label_smoothing: 0.3
+
+use_sample_weight: True  
+
+criterion_args:
+  NAME: WeightedSmoothCrossEntropy
   label_smoothing: 0.3
 
 loss_weight:
-  w_swd: 6
+  w_swd: 4
+  w_swd_s: 8
+  w_swd_e: 4
   w_tea: 1
 
 ema_rate: 0.995
@@ -109,5 +108,23 @@ datatransforms:
     angle: [0.0, 1.0, 0.0]
     gravity_dim: 1
 
+pretrained_teacher:
+  use_pretrained: False
+  pretrained_teacher_path: None
+continued_start_epoch: 1
+continued_cycle: 5
 # wandb:
 #   use_wandb: False
+
+batch_size: 8
+# distributed
+# dist_url: tcp://localhost:8888
+# dist_backend: 'nccl'
+# multiprocessing_distributed: True
+# ngpus_per_node: 1
+# world_size: 1
+# launcher: 'mp'
+# local_rank: 0
+
+# use_gpu: True
+# seed: null 

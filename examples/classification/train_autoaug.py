@@ -376,22 +376,22 @@ def main(gpu, cfg, profile=False):
                                                      )
 
 
-            # if cfg.pointwolf is not None:
-            #     train_loss, train_macc, train_oa, _, _ = \
-            #         train_one_epoch_pointwolf(model, train_loader,
-            #                         optimizer, scheduler, epoch, cfg)
-            # else:
-                # train_loss, train_macc, train_oa, _, _ = \
-                #     train_one_epoch(model, train_loader,
-                #                     optimizer, scheduler, epoch, cfg)
-            if cfg.get('rsmix_params', None) is not None:
+            if cfg.pointwolf is not None:
                 train_loss, train_macc, train_oa, _, _ = \
-                    train_one_epoch_rsmix(model, train_loader,
+                    train_one_epoch_pointwolf(model, train_loader,
                                     optimizer, scheduler, epoch, cfg)
             else:
                 train_loss, train_macc, train_oa, _, _ = \
                     train_one_epoch(model, fake_train_loader,
                                 optimizer, scheduler, epoch, cfg)
+            # if cfg.get('rsmix_params', None) is not None:
+            #     train_loss, train_macc, train_oa, _, _ = \
+            #         train_one_epoch_rsmix(model, train_loader,
+            #                         optimizer, scheduler, epoch, cfg)
+            # else:
+            #     train_loss, train_macc, train_oa, _, _ = \
+            #         train_one_epoch(model, fake_train_loader,
+            #                     optimizer, scheduler, epoch, cfg)
         else:
             train_loss, train_macc, train_oa, _, _ = \
                 train_one_epoch(model, train_loader,

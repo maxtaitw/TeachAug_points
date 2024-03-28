@@ -55,6 +55,7 @@ class ScanObjectNNHardest(Dataset):
         with h5py.File(h5_name, 'r') as f:
             self.points = np.array(f['data']).astype(np.float32)
             self.labels = np.array(f['label']).astype(int)
+        self.indices = np.arange(1, len(self.labels)+1)
 
         if slit_name == 'test' and uniform_sample:
             precomputed_path = os.path.join(
@@ -79,10 +80,12 @@ class ScanObjectNNHardest(Dataset):
     def __getitem__(self, idx):
         current_points = self.points[idx][:self.num_points]
         label = self.labels[idx]
+        index = self.indices[idx]
         if self.partition == 'train':
             np.random.shuffle(current_points)
         data = {'pos': current_points,
-                'y': label
+                'y': label,
+                'idx': index
                 }
         if self.transform is not None:
             data = self.transform(data)

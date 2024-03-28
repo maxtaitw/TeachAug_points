@@ -28,48 +28,20 @@ model:
       act: 'relu'
     norm_args:
       norm: 'bn'
-  cls_args:
+  cls_args: 
     NAME: ClsHead
     num_classes: 15
     mlps: [512, 256]
-    norm_args:
+    norm_args: 
       norm: 'bn1d'
 
-# pointwolf:
-#   w_num_anchor: 4
-#   w_sigma: 0.5
-#   w_R_range: 10
-#   w_S_range: 3
-#   w_T_range: 0.25
-
+# datatransforms:
+#   train: [PointsToTensor, PointCloudCenterAndNormalize]
+#   vote: [PointCloudRotation]
+#   val: [PointsToTensor, PointCloudCenterAndNormalize]
+#   kwargs:
+#     scale: [1, 1]
+#     angle: [0.0, 0.0, 0.0]
+#     gravity_dim: 1
+  
 epochs: 300
-
-mode: adaptpoint
-
-datatransforms_scanobjectnn_c:
-  val: [PointsToTensor, PointCloudCenterAndNormalize]
-  kwargs:
-    gravity_dim: 1
-
-adaptmodel_gan:
-  NAME: AdaptPoint_Augmentor
-  w_num_anchor: 4
-  w_sigma: 0.5
-  w_R_range: 10
-  w_S_range: 3
-  w_T_range: 0.25
-
-adaptmodel_dis:
-  NAME: PointDiscriminator1
-  num_classes: 15
-  normal_channel: False
-
-adaptpoint_params:
-  lr_generator: 0.0001
-  lr_discriminator: 0.0004
-  b1: 0.5
-  b2: 0.999
-  hardratio_std: 2
-  hardratio_s: 3
-  hardratio: 3
-

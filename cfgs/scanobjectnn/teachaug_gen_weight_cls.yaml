@@ -75,19 +75,27 @@ adaptpoint_params:
 
 # teacher model
 student_criterion_args:
-  NAME: NonSaturatingLoss
-  epsilon: 0.3
+  NAME: SmoothCrossEntropy
+  label_smoothing: 0.3
 
 teacher_criterion_args:
   NAME: SmoothCrossEntropy
   label_smoothing: 0.3
 
-criterion_args:
+weighted_criterion_args:
   NAME: WeightedSmoothCrossEntropy
+  label_smoothing: 0.3
+
+use_sample_weight: False  
+
+criterion_args:
+  NAME: SmoothCrossEntropy
   label_smoothing: 0.3
 
 loss_weight:
   w_swd: 4
+  w_swd_s: 8
+  w_swd_e: 4
   w_tea: 1
 
 ema_rate: 0.995

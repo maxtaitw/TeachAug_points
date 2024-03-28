@@ -7,3 +7,4 @@ from .ckpt_util import resume_model, resume_optimizer, resume_checkpoint, save_c
     get_missing_parameters_message, get_unexpected_parameters_message, cal_model_parm_nums
 from .dist_utils import reduce_tensor, gather_tensor, find_free_port
 from .utils_summary import Summary
+from .pca import PCA

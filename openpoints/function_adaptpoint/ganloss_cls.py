@@ -158,7 +158,8 @@ def get_feedback_loss_teacher_v2(cfg, model_pointcloud, model_teacher, data_real
     SWD_loss_dict = SWD_criterion(real_points, fake_points)
     swd_loss = SWD_loss_dict['loss'].mean(dim=0)
 
-    w_swd = cfg.loss_weight.w_swd
+    # w_swd = cfg.loss_weight.w_swd
+    w_swd = update_hardratio(cfg.loss_weight.w_swd_s, cfg.loss_weight.w_swd_e, epoch, cfg.epochs)
     w_tea = cfg.loss_weight.w_tea
     feedback_loss = w_swd*swd_loss + w_tea*teacher_loss
     # feedback_loss = loss_fake_stu + d_loss
@@ -169,9 +170,10 @@ def get_feedback_loss_teacher_v2(cfg, model_pointcloud, model_teacher, data_real
     writer.add_scalar('train_G_iter/feedback_loss', feedback_loss.item(), summary.train_iter_num)
     writer.add_scalar('train_G_iter/swd_loss', swd_loss.item(), summary.train_iter_num)
     writer.add_scalar('train_G_iter/teacher_loss', teacher_loss.item(), summary.train_iter_num)
+    # writer.add_scalar('train_G_iter/w_swd', w_swd.item(), summary.train_iter_num)
     return feedback_loss
 
-def get_feedback_loss_teacher_weight(cfg, model_pointcloud, model_teacher, data_real, data_fake, sample_weight, epoch, summary, writer):
+def get_feedback_loss_teacher_weight(cfg, model_student, model_teacher, data_real, data_fake, sample_weight, epoch, summary, writer):
     '''
     To generate harder case
     '''
@@ -181,26 +183,23 @@ def get_feedback_loss_teacher_weight(cfg, model_pointcloud, model_teacher, data_
     def fix_hard_ratio_loss(expected_hard_ratio, harder, easier):  # similar to MSE
         fix_loss = torch.abs(1 - torch.exp(harder - expected_hard_ratio * easier))
         return fix_loss
-        # return torch.abs(1 - torch.exp(harder - expected_hard_ratio * easier))
-    # sample_weight = sample_weight.cpu().detach().numpy()
-    # print(sample_weight.shape)
-    # print(sample_weight)
+    
     #   get loss on real/fake data
-    model_pointcloud.eval()
-    pred_fake = model_pointcloud.forward(data_fake)                     #   [B, 40]
+    model_student.eval()
+    pred_fake_stu = model_student.forward(data_fake)                     #   [B, 40]
     label = data_real['y']
-    criterion_stu = build_criterion_from_cfg(cfg.weight_teacher_criterion_args)
-    # criterion_stu.__init__(sample_weight=sample_weight)
-    loss_fake_stu = criterion_stu(pred_fake, label.long())       #   loss_fake: [1]   loss_raw_fake: [B]
+    criterion_stu = build_criterion_from_cfg(cfg.student_criterion_args)
+    loss_fake_stu = criterion_stu(pred_fake_stu, label.long())       #   loss_fake: [1]   loss_raw_fake: [B]
 
     #   teacher loss
-    model_teacher.eval()
+    # model_teacher.eval()
     pred_fake_tea = model_teacher.forward(data_fake)                     #   [B, 40]
-    # pred_real_tea = model_teacher.forward(data_real)                     #   [B, 40]
-    criterion_tea = build_criterion_from_cfg(cfg.weight_teacher_criterion_args)
-    # criterion_tea.__init__(sample_weight=sample_weight)
+    # print(model_teacher)
+    criterion_tea = build_criterion_from_cfg(cfg.teacher_criterion_args)
     loss_fake_tea = criterion_tea(pred_fake_tea, label.long())       #   loss_fake: [1]   loss_raw_fake: [B]
     # loss_real_tea = criterion_tea(pred_real_tea, label.long())       #   loss_fake: [1]   loss_raw_fake: [B]
+    # print(pred_fake_tea)
+    # print(pred_fake_stu)
 
     #   updata hardratio
     hardratio = update_hardratio(cfg.adaptpoint_params.hardratio_s, cfg.adaptpoint_params.hardratio, epoch, cfg.epochs)
@@ -209,36 +208,35 @@ def get_feedback_loss_teacher_weight(cfg, model_pointcloud, model_teacher, data_
     teacher_loss = fix_hard_ratio_loss(hardratio, loss_fake_stu, loss_fake_tea)
     # f_loss = fix_hard_ratio_loss(hardratio, loss_fake, loss_real)
 
-    #   EMD
+    #   SWD Loss
     real_points = data_real['x']
     fake_points = data_fake['x']
     # print(f'original_point_num{len(real_points)}, augmented_point_num{len(fake_points)}')
     SWD_criterion = SWD(num_projs=100)
     SWD_loss_dict = SWD_criterion(real_points, fake_points)
-    swd_loss = SWD_loss_dict['loss']
+    swd_loss = SWD_loss_dict['loss'].mean(dim=0)
 
-    norm_sample_weight = sample_weight.squeeze() / sample_weight.sum()
-    print(norm_sample_weight)
-    w_swd = cfg.loss_weight.w_swd
+    #   weighted cls
+    # print(sample_weight)
+    if cfg.use_sample_weight == True:
+        sample_weight = torch.clamp(sample_weight, min=0.3, max=1)
+        weighted_criterion = build_criterion_from_cfg(cfg.weighted_criterion_args)
+        weighted_cls_loss = weighted_criterion(pred_fake_stu, label.long(), sample_weight) 
+        writer.add_scalar('train_G_iter/weighted_cls_loss', weighted_cls_loss.item(), summary.train_iter_num)
+    else:
+        weighted_cls_loss = 0
+
+    w_swd = update_hardratio(cfg.loss_weight.w_swd_s, cfg.loss_weight.w_swd_e, epoch, cfg.epochs)
     w_tea = cfg.loss_weight.w_tea
-    weighted_swd = (w_swd * swd_loss * norm_sample_weight).sum().unsqueeze(0)
-    weighted_teacher = (w_tea * teacher_loss * norm_sample_weight).sum().unsqueeze(0)
-    feedback_loss = weighted_swd + weighted_teacher
-    # print(sample_weight.shape)
-    # print(swd_loss.shape)
-    # print(weighted_swd.shape)
-    # print(teacher_loss.shape)
-    # print(weighted_teacher.shape)
-    # print(feedback_loss.shape)
-    # feedback_loss = loss_fake_stu + d_loss
+    feedback_loss = w_swd*swd_loss + w_tea*teacher_loss + weighted_cls_loss
 
     writer.add_scalar('train_G_iter/loss_fake_stu', loss_fake_stu.mean().item(), summary.train_iter_num)
     writer.add_scalar('train_G_iter/loss_fake_tea', loss_fake_tea.mean().item(), summary.train_iter_num)
     # writer.add_scalar('train_G_iter/loss_real_tea', loss_real_tea.item(), summary.train_iter_num)
     writer.add_scalar('train_G_iter/feedback_loss', feedback_loss.item(), summary.train_iter_num)
-    writer.add_scalar('train_G_iter/swd_loss', weighted_swd.item(), summary.train_iter_num)
-    writer.add_scalar('train_G_iter/teacher_loss', weighted_teacher.item(), summary.train_iter_num)
-    return feedback_loss
+    writer.add_scalar('train_G_iter/swd_loss', swd_loss.item(), summary.train_iter_num)
+    writer.add_scalar('train_G_iter/teacher_loss', teacher_loss.item(), summary.train_iter_num)
+    return feedback_loss, pred_fake_stu, pred_fake_tea
 
 def get_feedback_loss_teacher_distill(cfg, model_pointcloud, model_teacher, data_real, data_fake, epoch, summary, writer):
     '''

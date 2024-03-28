@@ -155,7 +155,8 @@ class WeightedSmoothCrossEntropy(torch.nn.Module):
         if len(pred.shape)>2:
             pred = pred.transpose(1, 2).reshape(-1, pred.shape[1])
         gt = gt.contiguous().view(-1)
-        sample_weight = torch.from_numpy(sample_weight).float().cuda(non_blocking=True)
+        if not isinstance(sample_weight, torch.Tensor):
+            sample_weight = torch.from_numpy(sample_weight).float().cuda(non_blocking=True)
         if self.ignore_index is not None: 
             valid_idx = gt != self.ignore_index
             pred = pred[valid_idx, :]
@@ -168,16 +169,16 @@ class WeightedSmoothCrossEntropy(torch.nn.Module):
             one_hot = one_hot * (1 - self.label_smoothing) + (1 - one_hot) * self.label_smoothing / (n_class - 1)
             log_prb = F.log_softmax(pred, dim=1)
             if self.weight is not None:
-                loss = (-(one_hot * log_prb * self.weight).sum(dim=1) * sample_weight).mean()
+                loss = ((-(one_hot * log_prb * self.weight).sum(dim=1)) * sample_weight/sample_weight.sum())
             else:
-                loss = (-(one_hot * log_prb).sum(dim=1) * sample_weight).mean()
+                loss = ((-(one_hot * log_prb).sum(dim=1)) * sample_weight/sample_weight.sum())
         else:
             loss = F.cross_entropy(pred, gt, weight=self.weight, reduce=True)
         
         if self.return_valid:
             return loss, pred, gt
         else:
-            return loss
+            return loss.sum()
 
 def non_saturating_loss(logits, targets):
     probs = logits.softmax(1)

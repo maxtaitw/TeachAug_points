@@ -15,21 +15,32 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 # data loader with two output
 #####################################
 class Form_dataset_cls(Dataset):
-    def __init__(self, pointcloud, label, x=None):
+    def __init__(self, pointcloud, label, idx, x=None, unmasked=None, origin_x=None):
         assert pointcloud is not None
         self.pointcloud = np.concatenate(pointcloud)
         self.label = np.concatenate(label)
+        self.idx = np.concatenate(idx)
         if x is not None:
             self.x = np.concatenate(x)
+        if unmasked is not None:
+            self.unmasked = np.concatenate(unmasked)
+        if origin_x is not None:
+            self.origin_x = np.concatenate(origin_x)
         assert self.pointcloud.shape[0] == self.label.shape[0]
 
     def __getitem__(self, item):
         out_pointcloud = self.pointcloud[item]
         out_label = self.label[item]
+        out_idx = self.idx[item]
         x_ = self.x[item]
+        unmasked_ = self.unmasked[item]
+        origin_x_ = self.origin_x[item]
         data = {'pos': out_pointcloud,
                 'y': out_label,
-                'x': x_
+                'idx': out_idx,
+                'x': x_,
+                'unmasked_pos': unmasked_,
+                'origin_x': origin_x_
                 }
         # out_pointcloud = torch.from_numpy(out_pointcloud).float()
         # out_label = torch.from_numpy(out_label).int()

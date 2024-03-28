@@ -175,18 +175,18 @@ class Teachaug_Augmentor(nn.Module):
         # Move to origin space
         xyz_local_transformed = xyz_local_transformed + xyz_anchor.reshape(B, M, 1, 3)  # (B,M,N,3)
         xyz_local_transformed = self.kernel_regression(xyz, xyz_anchor, xyz_local_transformed)  #   [B, N, 3]
-        xyz_new = self.normalize(xyz_local_transformed)
+        xyz_deformed = self.normalize(xyz_local_transformed)
         # xyz_local_transformed = self.normalize(xyz_local_transformed)
 
         
         # xyz_new = xyz_new + offset * 0.05
         # xyz_new = self.global_transformation(xyz_local_transformed, probs_global)
-        xyz_new = xyz_new * masking[:,:,0].unsqueeze(dim=-1)
+        xyz_masked = xyz_deformed * masking[:,:,0].unsqueeze(dim=-1)
         # print(f'probs for R: {probs[:, :, :3]}')
         # print(f'probs for S: {probs[:, :, 3:6]}')
         # print(f'probs for T: {probs[:, :, 6:9]}')
         # print(f'offset: {offset*0.1}')
-        return xyz, xyz_new, weight
+        return xyz, xyz_deformed, xyz_masked, weight
 
 
 
@@ -707,6 +707,11 @@ class SAComponent(nn.Module):
         #                                     nn.Sigmoid()
         # )
 
+        self.extract_global_feat_weighting = nn.Sequential(
+                    nn.Conv1d(in_channels=last_channel, out_channels=3, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(3),
+        )
+
         self.pred_weight_net = nn.Sequential(
             nn.Conv1d(3, 256, 1, bias=False),
             nn.BatchNorm1d(256),
@@ -773,7 +778,7 @@ class SAComponent(nn.Module):
         # pointfeat = self.pred_weight_net(x_list[0].permute(0, 2, 1))
         # pointfeat = self.global_pooling(pointfeat.permute(0, 2, 1)).squeeze(2)
         # weight = self.weight_head(pointfeat)
-        pointfeat = self.extract_global_feat_masking(x_list[-1])
+        pointfeat = self.extract_global_feat_weighting(x_list[-1])
         pointfeat = torch.max(pointfeat, dim=2, keepdim=True)[0]                  #   [B, 3, 1]
         weight = self.weight_head(pointfeat)
 
@@ -789,8 +794,7 @@ class SAComponent(nn.Module):
         masking = self.fuse_masking(masking).permute(0, 2, 1)                              #   [B, N, 2]
         masking = F.gumbel_softmax(masking, tau=0.1, hard=True, eps=1e-10, dim=- 1)         #   [B, N, 2]
 
-
-        return prob, weight, masking
+        return prob, weight.squeeze(), masking
         # return prob
         # return prob, offset
 

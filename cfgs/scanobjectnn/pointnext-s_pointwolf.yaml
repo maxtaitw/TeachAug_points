@@ -44,7 +44,7 @@ pointwolf:
 
 epochs: 300
 
-mode: teachaugpoint_weight
+mode: adaptpoint
 
 datatransforms_scanobjectnn_c:
   val: [PointsToTensor, PointCloudCenterAndNormalize]
@@ -52,12 +52,12 @@ datatransforms_scanobjectnn_c:
     gravity_dim: 1
 
 adaptmodel_gan:
-  NAME: Teachaug_Augmentor
+  NAME: AdaptPoint_Augmentor
   w_num_anchor: 4
   w_sigma: 0.5
   w_R_range: 10
   w_S_range: 3
-  w_T_range: 0.5
+  w_T_range: 0.25
 
 adaptmodel_dis:
   NAME: PointDiscriminator1
@@ -73,41 +73,3 @@ adaptpoint_params:
   hardratio_s: 3
   hardratio: 3
 
-# teacher model
-student_criterion_args:
-  NAME: NonSaturatingLoss
-  label_smoothing: 0.3
-
-teacher_criterion_args:
-  NAME: SmoothCrossEntropy
-  label_smoothing: 0.3
-
-weight_teacher_criterion_args:
-  NAME: SmoothCrossEntropy_batch
-  label_smoothing: 0.3
-
-loss_weight:
-  w_swd: 6
-  w_tea: 1
-
-ema_rate: 0.995
-
-# datatransforms:
-#   train: [PointsToTensor, PointCloudCenterAndNormalize]
-#   vote: [PointCloudRotation]
-#   val: [PointsToTensor, PointCloudCenterAndNormalize]
-#   kwargs:
-#     scale: [1, 1]
-#     angle: [0.0, 0.0, 0.0]
-#     gravity_dim: 1
-datatransforms:
-  train: [PointsToTensor, PointCloudScaling, PointCloudCenterAndNormalize, PointCloudRotation]
-  vote: [PointCloudRotation]
-  val: [PointsToTensor, PointCloudCenterAndNormalize]
-  kwargs:
-    scale: [0.9, 1.1]
-    angle: [0.0, 1.0, 0.0]
-    gravity_dim: 1
-
-# wandb:
-#   use_wandb: False

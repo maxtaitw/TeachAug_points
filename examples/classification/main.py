@@ -95,6 +95,6 @@ if __name__ == "__main__":
         port = find_free_port()
         cfg.dist_url = f"tcp://localhost:{port}"
         print('using mp spawn for distributed training')
-        mp.spawn(main, nprocs=cfg.world_size, args=(cfg, args.profile))
+        mp.spawn(main, nprocs=cfg.world_size, args=(cfg,))
     else:
         main(0, cfg, profile=args.profile)
